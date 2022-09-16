@@ -31,10 +31,9 @@ const Mutation = {
         const { data } = args;
         const user = users.find(user => user.id === args.id);
         if (!user) return new Error('User not found');
-        console.log(args);
+
         for (const key in user) {
             if (data[key] !== null && data[key] !== undefined) {
-                console.log(data[key], user[key]);
                 if (key === 'email') {
                     const isEmailTaken = users.some(user => user.email === data.email);
                     if (isEmailTaken) return new Error('Email already taken');
@@ -50,18 +49,26 @@ const Mutation = {
         return user;
     },
     createPost(parent, args, context, info) {
-        const { users, posts } = context;
+        const { users, posts, pubsub } = context;
         const userExists = users.some((user) => user.id === args.data.user);
         if (!userExists) return new Error('User not found');
         const post = {
             id: uuidv4(),
             ...args.data
         }
+        if (args.data.published) {
+            pubsub.publish('post', {
+                post: {
+                    mutation: 'CREATED',
+                    data: post
+                }
+            });
+        }
         posts.push(post);
         return post;
     },
     deletePost(parent, args, context, info) {
-        const { posts, comments } = context;
+        const { posts, comments, pubsub } = context;
         const deletedPost = posts.find(post => post.id === args.id);
         if (!deletedPost) return new Error('Post not found');
 
@@ -69,25 +76,58 @@ const Mutation = {
         setPosts(updatePosts);
         const updateComments = comments.map(comment => comment.post !== deletedPost.id ? comment : null).filter(Boolean);
         setComments(updateComments);
+
+        if (deletedPost.published) {
+            pubsub.publish('post', {
+                post: {
+                    mutation: 'DELETED',
+                    data: deletedPost
+                }
+            })
+        }
         return deletedPost;
     },
     updatePost(parent, args, context, info) {
-        const {  posts } = context;
-        const {id,data} = args;
+        const { posts,pubsub} = context;
+        const { id, data } = args;
         const post = posts.find(post => post.id !== id);
         if (!post) return new Error('Post not found');
+        const originalPost = { ...post };
+
         for (const key in post) {
             if (data[key] !== null && data[key] !== undefined) {
                 post[key] = data[key];
             };
         }
-        const updatePost = posts.map((currentPost) => post.id === id ? post : currentPost);
-        setPosts(updatePost);
+        const updatePosts = posts.map((currentPost) => post.id === id ? post : currentPost);
+        setPosts(updatePosts);
 
+        //published unchange
+        let mutation = 'UPDATED';
+        let publishData = post;
+
+        //published change
+        if (originalPost.published !== data.published
+            && data.published !== undefined && data.published !== null) {
+            //change from false to true
+            console.log('originalPost',originalPost.published ,'data',data.published);
+            if (data.published) {
+                mutation = 'CREATED';
+            } else {
+                mutation = 'DELETED';
+                publishData = originalPost;;
+            }
+        }
+        pubsub.publish('post', {
+            post: {
+                mutation,
+                data: publishData
+            }
+        })
         return post;
     },
     createComment(parent, args, context, info) {
-        const { users, posts, comments } = context;
+        const { users, posts, comments, pubsub } = context;
         const userExists = users.some((user) => user.id === args.data.user);
         if (!userExists) return new Error('User not found');
 
@@ -99,31 +139,50 @@ const Mutation = {
             ...args.data
         }
         comments.push(comment);
+        pubsub.publish(`comment-post${args.data.post}`, {
+            comment:{
+                mutation:'CREATED',
+                data: comment
+            }
+        });
         return comment;
 
     },
     deleteComment(parent, args, context, info) {
-        const { comments } = context;
+        const { comments,pubsub } = context;
         const deletedComment = comments.find(comment => comment.id === args.id);
         if (!deletedComment) return new Error('Comment not found');
 
         const updateComments = comments.map(comment => comment.id !== args.id ? comment : null).filter(Boolean);
         setComments(updateComments);
+        
+        pubsub.publish(`comment-post${deletedComment.post}`,{
+            comment:{
+                mutation:"DELETED",
+                data:deletedComment
+            }
+        })
+
         return deletedComment;
 
     },
     updateComment(parent, args, context, info) {
-        const { comments } = context;
-        const {id,data} = args;
+        const { comments,pubsub } = context;
+        const { id, data } = args;
         const comment = comments.find(comment => comment.id !== id);
         if (!comment) return new Error('Comment not found');
-        if(data.text){
+        if (data.text) {
             comment.text = data.text;
         }
-       
+
         const updateComments = comments.map((currentComment) => comment.id === id ? comment : currentComment);
         setComments(updateComments);
-
+        pubsub.publish(`comment-post${comment.post}`,{
+            comment:{
+                mutation:"UPDATED",
+                data:comment
+            }
+        })
         return comment;
     },
 }
